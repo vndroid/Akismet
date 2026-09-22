@@ -277,7 +277,7 @@ class Plugin implements PluginInterface
             'permalink'            => $post->permalink,
             'comment_type'         => $comment['type'],
             'comment_author'       => $comment['author'],
-            'comment_author_email' => $comment['mail'],
+            'comment_author_email' => $comment['mail'] ?? '',
             'comment_author_url'   => $comment['url'],
             'comment_content'      => $comment['text']
         ];
