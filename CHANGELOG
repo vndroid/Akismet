@@ -1,0 +1,32 @@
+v1.3.0
+2026年09月22日
+    - **按 Akismet 官方文档重写请求方式**：API Key 改为放在请求体的 api_key 参数里，
+      不再拼进域名（KEY.rest.akismet.com 是旧写法，官方插件与 SDK 都已不用）；
+      请求改为 application/x-www-form-urlencoded（此前是 Typecho HTTP 客户端默认的 multipart）；
+      校验 Key 时同时发送 key 与 api_key，与官方插件、akismet-sdk-php 一致；
+      User-Agent 改为文档要求的「应用/版本 | Akismet/版本」格式
+    - **移除 Typepad AntiSpam 支持**：该服务 2013 年转给 Impermium，2014 年随 Google 收购停止对外服务，
+      Typepad 本身也已于 2025-09-30 关停。配置说明只保留 Akismet，服务地址默认 https://rest.akismet.com
+    - **服务地址增加格式校验**：只接受 http / https；拒绝带用户名、@、?、# 的地址，拒绝非法端口。
+      地址带端口时按端口发送（此前端口被丢弃，校验 Key 与检查评论还会发到不同端口）。
+      保存配置时先校验地址再请求 —— 此前是先按用户填的地址发请求、后校验，gopher:// 等地址会先打到内网。
+      数据库里残留的不合法旧地址也会再校验一次，不合法则不发请求
+    - **修复 Key 里含 @ 或 # 时评论数据被发往任意主机**：Key 拼进域名时，a@evil.test# 会让
+      访客的邮箱、IP 和评论正文发到 evil.test。Key 改为放在请求体后这个问题不复存在
+    - **管理员评论不再被误判**：登录用户的评论带上 user_role（取 Typecho 用户组），
+      管理员按文档一律判为正常。此前管理员本人的评论也可能直接进垃圾箱
+    - 补发推荐字段 comment_date_gmt、comment_post_modified_gmt、blog_lang、blog_charset；
+      没有值的字段不再发送（例如 trackback / pingback 没有邮箱）
+    - 后台纠正误判（submit-ham / submit-spam）时不再发送后台页面地址作为来源，
+      文章链接改为所属文章地址（去掉 #comment-N，评论分页时也不再是分页地址）
+    - **异常不再静默放行**：返回 invalid（如 Key 失效）、HTTP 错误、无法识别的响应、超时或连不上时，
+      评论仍然放行，但会向 PHP 错误日志写一条以「Akismet 」开头的记录，带状态码与 X-akismet-debug-help；
+      回报 ham/spam 未收到成功响应同样记录
+    - **修复保存配置时 Akismet 不可达导致后台 500**：校验 Key 时捕获网络异常，改为表单提示并写日志
+    - 修复 trackback / pingback 没有 mail 字段导致的 PHP Warning
+    - 启用失败的提示去掉 allow_url_fopen（Typecho 1.3 的 HTTP 客户端只支持 curl）
+    - 新增 tests/ 目录：七个 Python 脚本，在服务器上用后台已配置的真实 API Key 做功能测试
+    - 在 PHP 8.4 下以 error_reporting=-1 跑完整回归，无任何弃用、警告或错误
+
+v1.2.0
+    - 原始版本，作者 joyqi，来自 https://github.com/joyqi/typecho-plugins

@@ -1,0 +1,8 @@
+*.php linguist-language=php
+*.py linguist-language=python
+*.md linguist-documentation
+
+# 测试脚本只在服务器命令行上运行, 不随发布包（git archive / GitHub 下载 ZIP）进入网站目录
+tests/ export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
