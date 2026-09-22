@@ -25,14 +25,14 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package Akismet
  * @author joyqi
- * @version 1.3.0
+ * @version 1.3.1
  * @since 1.2.0
- * @link https://github.com/joyqi/typecho-plugins
+ * @link https://github.com/vndroid/Akismet
  */
 class Plugin implements PluginInterface
 {
     /** 插件版本, 用于 User-Agent */
-    private const VERSION = '1.3.0';
+    private const VERSION = '1.3.1';
 
     /** 官方服务地址 */
     private const DEFAULT_URL = 'https://rest.akismet.com';
@@ -48,7 +48,7 @@ class Plugin implements PluginInterface
     public static function activate()
     {
         if (null === Client::get()) {
-            throw new Exception(_t('对不起, 您的主机没有启用 php-curl 扩展, 无法使用此插件'));
+            throw new Exception(_t('对不起，服务器没有启用 curl 扩展，无法使用此插件'));
         }
 
         Feedback::pluginHandle()->comment = __CLASS__ . '::filter';
@@ -56,7 +56,7 @@ class Plugin implements PluginInterface
         XmlRpc::pluginHandle()->pingback = __CLASS__ . '::filter';
         Edit::pluginHandle()->mark = __CLASS__ . '::mark';
 
-        return _t('请配置此插件的API KEY, 以使您的反垃圾策略生效');
+        return _t('请配置此插件的接口密钥，反垃圾策略才会生效');
     }
 
     /**
@@ -77,22 +77,22 @@ class Plugin implements PluginInterface
             'key',
             null,
             null,
-            _t('API Key'),
-            _t('在 <a href="https://akismet.com/account/" target="_blank" rel="noopener noreferrer">Akismet 账户</a> 中获取的 API Key')
+            _t('服务密钥'),
+            _t('在服务提供商 <a href="https://akismet.com/account/" target="_blank" rel="noopener noreferrer">Akismet</a> 账户中获取的 <code>API</code> 密钥')
         );
-        $form->addInput($key->addRule('required', _t('您必须填写 API Key'))
-            ->addRule([self::class, 'validate'], _t('API Key 校验失败, 请检查 API Key 与服务地址')));
+        $form->addInput($key->addRule('required', _t('必须填写服务密钥'))
+            ->addRule([self::class, 'validate'], _t('密钥校验失败，请检查 API 密钥与服务地址')));
 
         $url = new Form\Element\Text(
             'url',
             null,
             self::DEFAULT_URL,
             _t('服务地址'),
-            _t('Akismet 接口地址, 一般保持默认的 %s 即可; 仅在需要经由自建代理访问时修改', self::DEFAULT_URL)
+            _t('服务 Akismet 接口地址，一般保持默认的 %s 即可，仅在需要经由自建代理访问时修改', self::DEFAULT_URL)
         );
-        $form->addInput($url->addRule('required', _t('您必须填写服务地址'))
-            ->addRule([self::class, 'validateUrl'], _t('服务地址只能是 http:// 或 https:// 开头的有效地址'))
-            ->addRule('url', _t('您使用的地址格式错误')));
+        $form->addInput($url->addRule('required', _t('必须填写服务地址'))
+            ->addRule([self::class, 'validateUrl'], _t('服务地址只能是 <code>http://</code> 或 <code>https://</code> 开头的有效地址'))
+            ->addRule('url', _t('地址格式错误')));
     }
 
     /**
