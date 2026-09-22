@@ -3,12 +3,14 @@
 namespace TypechoPlugin\Akismet;
 
 use Typecho\Common;
+use Typecho\Db;
 use Typecho\Http\Client;
 use Typecho\Plugin\Exception;
 use Typecho\Plugin\PluginInterface;
 use Typecho\Request;
 use Typecho\Widget\Helper\Form;
 use Widget\Base;
+use Widget\Base\Comments;
 use Widget\Comments\Edit;
 use Widget\Feedback;
 use Widget\Options;
@@ -23,12 +25,21 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  *
  * @package Akismet
  * @author joyqi
- * @version 1.2.0
+ * @version 1.3.0
  * @since 1.2.0
  * @link https://github.com/joyqi/typecho-plugins
  */
 class Plugin implements PluginInterface
 {
+    /** 插件版本, 用于 User-Agent */
+    private const VERSION = '1.3.0';
+
+    /** 官方服务地址 */
+    private const DEFAULT_URL = 'https://rest.akismet.com';
+
+    /** submit-spam / submit-ham 成功时的响应体 */
+    private const FEEDBACK_SUCCESS_BODY = 'Thanks for making the web a better place.';
+
     /**
      * 激活插件方法,如果激活失败,直接抛出异常
      *
@@ -36,8 +47,8 @@ class Plugin implements PluginInterface
      */
     public static function activate()
     {
-        if (false == Client::get()) {
-            throw new Exception(_t('对不起, 您的主机不支持 php-curl 扩展而且没有打开 allow_url_fopen 功能, 无法正常使用此功能'));
+        if (null === Client::get()) {
+            throw new Exception(_t('对不起, 您的主机没有启用 php-curl 扩展, 无法使用此插件'));
         }
 
         Feedback::pluginHandle()->comment = __CLASS__ . '::filter';
@@ -66,19 +77,18 @@ class Plugin implements PluginInterface
             'key',
             null,
             null,
-            _t('服务密钥'),
-            _t('此密钥需要向服务提供商注册<br />它是一个用于表明您合法用户身份的字符串')
+            _t('API Key'),
+            _t('在 <a href="https://akismet.com/account/" target="_blank" rel="noopener noreferrer">Akismet 账户</a> 中获取的 API Key')
         );
-        $form->addInput($key->addRule('required', _t('您必须填写一个服务密钥'))
-            ->addRule([self::class, 'validate'], _t('您使用的服务密钥错误')));
+        $form->addInput($key->addRule('required', _t('您必须填写 API Key'))
+            ->addRule([self::class, 'validate'], _t('API Key 校验失败, 请检查 API Key 与服务地址')));
 
         $url = new Form\Element\Text(
             'url',
             null,
-            'https://rest.akismet.com',
+            self::DEFAULT_URL,
             _t('服务地址'),
-            _t('这是反垃圾评论服务提供商的服务器地址<br />
-        我们推荐您使用 <a href="http://akismet.com">Akismet</a> 或者 <a href="http://antispam.typepad.com">Typepad</a> 的反垃圾服务')
+            _t('Akismet 接口地址, 一般保持默认的 %s 即可; 仅在需要经由自建代理访问时修改', self::DEFAULT_URL)
         );
         $form->addInput($url->addRule('required', _t('您必须填写服务地址'))
             ->addRule([self::class, 'validateUrl'], _t('服务地址只能是 http:// 或 https:// 开头的有效地址'))
@@ -100,7 +110,7 @@ class Plugin implements PluginInterface
      * 解析服务地址, 格式不合法时返回 null
      *
      * 只接受 http/https; 拒绝 userinfo、query、fragment,
-     * 以免拼接子域名或接口路径时改变实际请求的主机。
+     * 以免拼接接口路径时改变实际请求的主机。
      *
      * @param mixed $url 服务地址
      * @return array|null
@@ -142,19 +152,20 @@ class Plugin implements PluginInterface
     }
 
     /**
-     * 由解析结果拼出基础地址, 保留端口
+     * 由解析结果拼出接口地址, 保留端口
      *
      * @param array $params parseServiceUrl 的返回值
-     * @param string $subdomain 需要加在主机名前的子域名
+     * @param string $api 接口名, 如 comment-check
      * @return string
      */
-    private static function buildServiceUrl(array $params, string $subdomain = ''): string
+    private static function buildServiceUrl(array $params, string $api): string
     {
-        return $params['scheme'] . '://'
-            . ('' === $subdomain ? '' : $subdomain . '.')
+        $base = $params['scheme'] . '://'
             . $params['host']
             . (null === $params['port'] ? '' : ':' . $params['port'])
             . $params['path'];
+
+        return Common::url('/1.1/' . $api, $base);
     }
 
     /**
@@ -167,6 +178,60 @@ class Plugin implements PluginInterface
     }
 
     /**
+     * 向 Akismet 发送请求
+     *
+     * 按官方文档: POST、application/x-www-form-urlencoded, API Key 放在 api_key 参数里。
+     *
+     * @param array $params parseServiceUrl 的返回值
+     * @param string $api 接口名
+     * @param string $key API Key
+     * @param array $fields 请求字段（不含 api_key / blog）
+     * @param int $timeout 超时秒数
+     * @return Client
+     * @throws Client\Exception
+     */
+    private static function request(array $params, string $api, string $key, array $fields, int $timeout): Client
+    {
+        $options = Options::alloc();
+
+        $fields = array_merge($fields, [
+            'api_key' => $key,
+            'blog'    => $options->siteUrl
+        ]);
+
+        $client = Client::get();
+        $client->setHeader('User-Agent', str_replace(' ', '/', $options->generator) . ' | Akismet/' . self::VERSION)
+            ->setHeader('Content-Type', 'application/x-www-form-urlencoded; charset=' . ($options->charset ?: 'UTF-8'))
+            ->setMultipart(false)
+            ->setTimeout($timeout)
+            ->setData($fields)
+            ->send(self::buildServiceUrl($params, $api));
+
+        return $client;
+    }
+
+    /**
+     * 记录一次非预期的响应
+     *
+     * @param string $api 接口名
+     * @param Client $client 已完成请求的客户端
+     */
+    private static function logUnexpected(string $api, Client $client)
+    {
+        $detail = $client->getResponseHeader('X-akismet-debug-help')
+            ?? $client->getResponseHeader('X-akismet-error')
+            ?? '';
+
+        error_log(sprintf(
+            'Akismet %s: unexpected response (HTTP %d) "%s"%s',
+            $api,
+            $client->getResponseStatus(),
+            Common::subStr(trim($client->getResponseBody()), 0, 100, '...'),
+            '' === $detail ? '' : ' - ' . $detail
+        ));
+    }
+
+    /**
      * 验证api的key值
      *
      * @param string $key 服务密钥
@@ -174,28 +239,28 @@ class Plugin implements PluginInterface
      */
     public static function validate(string $key): bool
     {
-        $options = Options::alloc();
         $params = self::parseServiceUrl(Request::getInstance()->get('url'));
 
         // 服务地址不合法时不发请求（Validate 先跑 key 的规则, 此时 url 还没被校验）
-        if (null === $params) {
+        if (null === $params || null === Client::get()) {
             return false;
         }
 
-        $data = [
-            'key'  => $key,
-            'blog' => $options->siteUrl
-        ];
+        try {
+            // verify-key 读取的是 key 参数, 官方插件与 SDK 都同时带上 key 和 api_key
+            $client = self::request($params, 'verify-key', $key, ['key' => $key], 5);
+        } catch (Client\Exception $e) {
+            error_log('Akismet verify-key: ' . $e->getMessage());
+            return false;
+        }
 
-        $client = Client::get();
-        if (false != $client) {
-            $client->setData($data)
-                ->setHeader('User-Agent', $options->generator . ' | Akismet/1.1')
-                ->send(Common::url('/1.1/verify-key', self::buildServiceUrl($params)));
+        $body = $client->getResponseBody();
+        if ('valid' == $body) {
+            return true;
+        }
 
-            if ('valid' == $client->getResponseBody()) {
-                return true;
-            }
+        if ('invalid' != $body) {
+            self::logUnexpected('verify-key', $client);
         }
 
         return false;
@@ -220,6 +285,60 @@ class Plugin implements PluginInterface
     }
 
     /**
+     * 取被评论的文章组件
+     *
+     * 回报 ham/spam 时传进来的是评论组件, 换成它所属的文章。
+     *
+     * @param Base $post 被评论的文章或评论组件
+     * @return Base
+     */
+    private static function postWidget(Base $post): Base
+    {
+        return $post instanceof Comments ? $post->parentContent : $post;
+    }
+
+    /**
+     * 取被评论文章的地址
+     *
+     * 评论组件的 permalink 是评论地址（带 #comment-N, 开启评论分页时还是评论分页地址）,
+     * 这里统一用所属文章的地址并去掉片段。
+     *
+     * @param Base $post 被评论的文章
+     * @return string|null
+     */
+    private static function postPermalink(Base $post): ?string
+    {
+        $permalink = $post->permalink;
+        if (!is_string($permalink) || '' === $permalink) {
+            return null;
+        }
+
+        $pos = strpos($permalink, '#');
+        return false === $pos ? $permalink : substr($permalink, 0, $pos);
+    }
+
+    /**
+     * 取评论者在本站的用户组, 作为 Akismet 的 user_role
+     *
+     * Akismet 对 user_role=administrator 一律返回 false。
+     *
+     * @param array $comment 评论结构
+     * @return string|null 游客返回 null
+     */
+    private static function userRole(array $comment): ?string
+    {
+        $uid = (int) ($comment['authorId'] ?? 0);
+        if ($uid <= 0) {
+            return null;
+        }
+
+        $db = Db::get();
+        $user = $db->fetchRow($db->select('group')->from('table.users')->where('uid = ?', $uid)->limit(1));
+
+        return empty($user['group']) ? null : $user['group'];
+    }
+
+    /**
      * 评论过滤器
      *
      * @param array $comment 评论结构
@@ -236,7 +355,16 @@ class Plugin implements PluginInterface
         $url = $options->plugin('Akismet')->url;
         $key = $options->plugin('Akismet')->key;
 
-        $allowedServerVars = 'comment-check' == $api ? [
+        // 旧配置里可能存着不合法的地址, 这里再校验一次, 不合法则不发请求
+        $params = self::parseServiceUrl($url);
+        if (!$key || null === $params || null === Client::get()) {
+            return $comment;
+        }
+
+        $isCheck = 'comment-check' == $api;
+        $post = self::postWidget($post);
+
+        $allowedServerVars = $isCheck ? [
             'SCRIPT_URI',
             'HTTP_HOST',
             'HTTP_USER_AGENT',
@@ -270,17 +398,27 @@ class Plugin implements PluginInterface
         ] : [];
 
         $data = [
-            'blog'                 => $options->siteUrl,
-            'user_ip'              => $comment['ip'],
-            'user_agent'           => $comment['agent'],
-            'referrer'             => Request::getInstance()->getReferer(),
-            'permalink'            => $post->permalink,
-            'comment_type'         => $comment['type'],
-            'comment_author'       => $comment['author'],
-            'comment_author_email' => $comment['mail'] ?? '',
-            'comment_author_url'   => $comment['url'],
-            'comment_content'      => $comment['text']
+            'user_ip'                   => $comment['ip'],
+            'user_agent'                => $comment['agent'],
+            // 回报 ham/spam 发生在后台, 当前请求的来源是后台页面而非评论者的来源, 原始来源又没有入库, 因此不发
+            'referrer'                  => $isCheck ? Request::getInstance()->getReferer() : null,
+            'permalink'                 => self::postPermalink($post),
+            'comment_type'              => $comment['type'],
+            'comment_author'            => $comment['author'],
+            'comment_author_email'      => $comment['mail'] ?? '',
+            'comment_author_url'        => $comment['url'],
+            'comment_content'           => $comment['text'],
+            'comment_date_gmt'          => isset($comment['created']) ? gmdate('c', (int) $comment['created']) : null,
+            'comment_post_modified_gmt' => $post->modified ? gmdate('c', (int) $post->modified) : null,
+            'comment_lang'              => $options->lang ? strtolower(str_replace('-', '_', $options->lang)) : null,
+            'comment_charset'           => $options->charset ?: null,
+            'user_role'                 => self::userRole($comment)
         ];
+
+        // 没有值的字段不发, 以免把空串当成有效数据交给 Akismet
+        $data = array_filter($data, function ($value) {
+            return null !== $value && '' !== $value;
+        });
 
         foreach ($allowedServerVars as $val) {
             if (array_key_exists($val, $_SERVER)) {
@@ -288,25 +426,35 @@ class Plugin implements PluginInterface
             }
         }
 
+        // 内部统一用 comment_ 前缀命名, 请求接口前换成 Akismet 规定的字段名
+        $apiFieldNames = [
+            'comment_lang'    => 'blog_lang',
+            'comment_charset' => 'blog_charset'
+        ];
+
+        $fields = [];
+        foreach ($data as $name => $value) {
+            $fields[$apiFieldNames[$name] ?? $name] = $value;
+        }
+
         try {
-            $client = Client::get();
-            // 旧配置里可能存着不合法的地址, 这里再校验一次, 不合法则不发请求
-            $params = self::parseServiceUrl($url);
-            if (false != $client && $key && null !== $params) {
-                $url = self::buildServiceUrl($params, $key);
-
-                $client->setHeader('User-Agent', $options->generator . ' | Akismet/1.1')
-                    ->setTimeout(5)
-                    ->setData($data)
-                    ->send(Common::url('/1.1/' . $api, $url));
-
-                if ('true' == $client->getResponseBody()) {
-                    $comment['status'] = 'spam';
-                }
-            }
+            $client = self::request($params, $api, $key, $fields, 5);
         } catch (Client\Exception $e) {
-            //do nothing
-            error_log($e->getMessage());
+            error_log('Akismet ' . $api . ': ' . $e->getMessage());
+            return $comment;
+        }
+
+        $body = $client->getResponseBody();
+
+        if ($isCheck) {
+            if ('true' == $body) {
+                $comment['status'] = 'spam';
+            } elseif ('false' != $body) {
+                // invalid（API Key 失效等）或非预期响应: 放行, 但必须留下记录
+                self::logUnexpected($api, $client);
+            }
+        } elseif (self::FEEDBACK_SUCCESS_BODY != $body) {
+            self::logUnexpected($api, $client);
         }
 
         return $comment;
