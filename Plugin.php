@@ -80,7 +80,81 @@ class Plugin implements PluginInterface
             _t('这是反垃圾评论服务提供商的服务器地址<br />
         我们推荐您使用 <a href="http://akismet.com">Akismet</a> 或者 <a href="http://antispam.typepad.com">Typepad</a> 的反垃圾服务')
         );
-        $form->addInput($url->addRule('url', _t('您使用的地址格式错误')));
+        $form->addInput($url->addRule('required', _t('您必须填写服务地址'))
+            ->addRule([self::class, 'validateUrl'], _t('服务地址只能是 http:// 或 https:// 开头的有效地址'))
+            ->addRule('url', _t('您使用的地址格式错误')));
+    }
+
+    /**
+     * 验证服务地址格式
+     *
+     * @param string $url 服务地址
+     * @return boolean
+     */
+    public static function validateUrl(string $url): bool
+    {
+        return null !== self::parseServiceUrl($url);
+    }
+
+    /**
+     * 解析服务地址, 格式不合法时返回 null
+     *
+     * 只接受 http/https; 拒绝 userinfo、query、fragment,
+     * 以免拼接子域名或接口路径时改变实际请求的主机。
+     *
+     * @param mixed $url 服务地址
+     * @return array|null
+     */
+    private static function parseServiceUrl($url): ?array
+    {
+        if (!is_string($url) || '' === $url) {
+            return null;
+        }
+
+        $params = parse_url($url);
+        if (false === $params || empty($params['scheme']) || empty($params['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower($params['scheme']);
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+
+        if (isset($params['user']) || isset($params['pass']) || isset($params['query']) || isset($params['fragment'])) {
+            return null;
+        }
+
+        if (!preg_match('/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i', $params['host'])) {
+            return null;
+        }
+
+        if (isset($params['port']) && ($params['port'] < 1 || $params['port'] > 65535)) {
+            return null;
+        }
+
+        return [
+            'scheme' => $scheme,
+            'host'   => strtolower($params['host']),
+            'port'   => $params['port'] ?? null,
+            'path'   => rtrim($params['path'] ?? '', '/')
+        ];
+    }
+
+    /**
+     * 由解析结果拼出基础地址, 保留端口
+     *
+     * @param array $params parseServiceUrl 的返回值
+     * @param string $subdomain 需要加在主机名前的子域名
+     * @return string
+     */
+    private static function buildServiceUrl(array $params, string $subdomain = ''): string
+    {
+        return $params['scheme'] . '://'
+            . ('' === $subdomain ? '' : $subdomain . '.')
+            . $params['host']
+            . (null === $params['port'] ? '' : ':' . $params['port'])
+            . $params['path'];
     }
 
     /**
@@ -101,7 +175,12 @@ class Plugin implements PluginInterface
     public static function validate(string $key): bool
     {
         $options = Options::alloc();
-        $url = Request::getInstance()->get('url');
+        $params = self::parseServiceUrl(Request::getInstance()->get('url'));
+
+        // 服务地址不合法时不发请求（Validate 先跑 key 的规则, 此时 url 还没被校验）
+        if (null === $params) {
+            return false;
+        }
 
         $data = [
             'key'  => $key,
@@ -112,7 +191,7 @@ class Plugin implements PluginInterface
         if (false != $client) {
             $client->setData($data)
                 ->setHeader('User-Agent', $options->generator . ' | Akismet/1.1')
-                ->send(Common::url('/1.1/verify-key', $url));
+                ->send(Common::url('/1.1/verify-key', self::buildServiceUrl($params)));
 
             if ('valid' == $client->getResponseBody()) {
                 return true;
@@ -211,9 +290,10 @@ class Plugin implements PluginInterface
 
         try {
             $client = Client::get();
-            if (false != $client && $key) {
-                $params = parse_url($url);
-                $url = $params['scheme'] . '://' . $key . '.' . $params['host'] . ($params['path'] ?? null);
+            // 旧配置里可能存着不合法的地址, 这里再校验一次, 不合法则不发请求
+            $params = self::parseServiceUrl($url);
+            if (false != $client && $key && null !== $params) {
+                $url = self::buildServiceUrl($params, $key);
 
                 $client->setHeader('User-Agent', $options->generator . ' | Akismet/1.1')
                     ->setTimeout(5)
