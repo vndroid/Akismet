@@ -83,6 +83,11 @@ switch ($in['action']) {
         $out['status'] = $result['status'];
         break;
 
+    case 'user_role':
+        $m = new \ReflectionMethod(Akismet::class, 'userRole');
+        $out['role'] = $m->invoke(null, $in['comment']);
+        break;
+
     case 'find':
         $row = $db->fetchRow($db->select('coid', 'status', 'type', 'author')->from('table.comments')
             ->where('cid = ? AND url = ?', $in['cid'], $in['url'])->order('coid', \Typecho\Db::SORT_DESC)->limit(1));

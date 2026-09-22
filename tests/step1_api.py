@@ -71,8 +71,12 @@ status, body, h = call('comment-check', **base_fields, comment_author='akismet-g
                        comment_author_email='akismet-guaranteed-spam@example.com', comment_content='test')
 common.check('固定垃圾值 → true', body == 'true', f'HTTP {status} "{body[:60]}" {debug(h)}'.strip())
 
+# 按官方文档: 其他字段用正常值, 只把 user_role 设为 administrator。
+# 不能夹带 akismet-guaranteed-spam —— 固定垃圾值优先级更高, 会让结果变成 true。
 status, body, h = call('comment-check', **base_fields, comment_author='Akismet Probe',
-                       comment_content='akismet-guaranteed-spam', user_role='administrator')
+                       comment_author_email='probe@example.com',
+                       comment_content='Thanks for the detailed write-up, it helped me fix my setup.',
+                       user_role='administrator')
 common.check('user_role=administrator → false', body == 'false', f'HTTP {status} "{body[:60]}" {debug(h)}'.strip())
 
 status, body, h = call('comment-check', **dict(base_fields, api_key=key + 'x'), comment_author='x', comment_content='x')
